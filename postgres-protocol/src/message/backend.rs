@@ -41,6 +41,7 @@ pub const PRIMARY_KEEPALIVE_TAG: u8 = b'k';
 
 // logical replication message tags
 const BEGIN_TAG: u8 = b'B';
+const MESSAGE_TAG: u8 = b'M';
 const COMMIT_TAG: u8 = b'C';
 const ORIGIN_TAG: u8 = b'O';
 const RELATION_TAG: u8 = b'R';
@@ -974,6 +975,8 @@ impl PrimaryKeepAliveBody {
 pub enum LogicalReplicationMessage {
     /// A BEGIN statement
     Begin(BeginBody),
+    /// A MESSAGE statement
+    Message(MessageBody),
     /// A BEGIN statement
     Commit(CommitBody),
     /// An Origin replication message
@@ -1008,6 +1011,20 @@ impl LogicalReplicationMessage {
                 timestamp: buf.read_i64::<BigEndian>()?,
                 xid: buf.read_u32::<BigEndian>()?,
             }),
+            MESSAGE_TAG => {
+                let transactional = buf.read_i8()? != 0;
+                let lsn = buf.read_u64::<BigEndian>()?;
+                let prefix = buf.read_cstr()?;
+                let len = buf.read_u32::<BigEndian>()?;
+                let mut data = vec![0; len as usize];
+                buf.read_exact(&mut data)?;
+                Self::Message(MessageBody {
+                    transactional,
+                    lsn,
+                    prefix,
+                    content: data.into(),
+                })
+            }
             COMMIT_TAG => Self::Commit(CommitBody {
                 flags: buf.read_i8()?,
                 commit_lsn: buf.read_u64::<BigEndian>()?,
@@ -1290,6 +1307,38 @@ impl BeginBody {
     /// Xid of the transaction.
     pub fn xid(&self) -> u32 {
         self.xid
+    }
+}
+
+/// A logical replication MESSAGE
+#[derive(Debug)]
+pub struct MessageBody {
+    transactional: bool,
+    lsn: u64,
+    prefix: Bytes,
+    content: Bytes,
+}
+
+impl MessageBody {
+    #[inline]
+    /// Check if the message is part of a transaction or not
+    pub fn transactional(&self) -> bool {
+        self.transactional
+    }
+
+    /// Get the LSN of the message
+    pub fn lsn(&self) -> Lsn {
+        self.lsn
+    }
+
+    /// Get the prefix of the message, useful to quickly discard irrelevant messages
+    pub fn prefix(&self) -> io::Result<&str> {
+        get_str(&self.prefix)
+    }
+
+    /// Get the content of the message
+    pub fn content(&self) -> &[u8] {
+        &self.content
     }
 }
 
